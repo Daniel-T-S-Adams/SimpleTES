@@ -234,32 +234,14 @@ class CheckpointManager:
 
     def _config_to_dict(self) -> dict[str, Any]:
         """Serialize config (excluding sensitive data)."""
-        c = self.config
-        return {
-            "init_program": c.init_program, "evaluator_path": c.evaluator_path,
-            "eval_venv": getattr(c, "eval_venv", None),
-            "eval_python": c.eval_python,
-            "instruction_path": c.instruction_path, "max_generations": c.max_generations,
-            "num_inspirations": c.num_inspirations,
-            "min_inspirations_cnt": c.min_inspirations_cnt,
-            "max_inspirations_cnt": c.max_inspirations_cnt,
-            "eval_concurrency": c.eval_concurrency,
-            "eval_timeout": c.eval_timeout, "gen_concurrency": c.gen_concurrency,
-            "init_eval_repeats": c.init_eval_repeats,
-            "init_eval_reduce": "max",
-            "log_interval": c.log_interval, "early_stop_score": c.early_stop_score,
-            "output_path": c.output_path, "save_llm_io": c.save_llm_io,
-            "selector": c.selector, "model": c.model,
-            "temperature": c.temperature, "max_tokens": c.max_tokens,
-            "api_base": c.api_base, "retry": c.retry, "timeout": c.timeout,
-            "llm_backend": c.llm_backend,
-            "context_window": c.context_window,
-            "reasoning_budget": c.reasoning_budget,
-            "response_budget": c.response_budget,
-            "reflection_mode": c.reflection_mode,
-            "llm_policy_model": c.llm_policy_model if c.llm_policy_model is not None else c.model,
-            "llm_policy_api_base": c.llm_policy_api_base if c.llm_policy_api_base is not None else c.api_base,
-        }
+        from dataclasses import asdict
+
+        config = asdict(self.config)
+        config.pop("api_key", None)
+        config.pop("llm_policy_api_key", None)
+        config["llm_policy_model"] = self.config.llm_policy_model or self.config.model
+        config["llm_policy_api_base"] = self.config.llm_policy_api_base or self.config.api_base
+        return config
 
     def load(self, path: str, db: NodeDatabase, selector: Selector) -> dict[str, Any]:
         """
@@ -308,14 +290,24 @@ class CheckpointManager:
         with open(metadata_path, encoding="utf-8") as f:
             metadata = json.load(f)
         with open(config_path, encoding="utf-8") as f:
-            _ = json.load(f)
+            saved_config = json.load(f)
         with open(policy_path, encoding="utf-8") as f:
             policy_state = json.load(f)
+        if not isinstance(policy_state, dict):
+            policy_state = {}
+        state = policy_state.get("state", policy_state.get("policy_state", {}))
+        saved_budget = saved_config.get(
+            "max_generations", state.get("max_generations", self.config.max_generations))
+        if self.config.max_generations < saved_budget:
+            raise ValueError("Resume cannot decrease max_generations")
+        if self.config.max_generations > saved_budget:
+            for key in ("selector", "num_chains", "k_candidates"):
+                saved_value = saved_config.get(key, state.get("k" if key == "k_candidates" else key))
+                if saved_value != getattr(self.config, key):
+                    raise ValueError(f"Resume cannot change {key} when extending max_generations")
 
         if not isinstance(metadata, dict):
             raise ValueError("metadata.json must contain a JSON object")
-        if not isinstance(policy_state, dict):
-            policy_state = {}
 
         if os.path.exists(nodes_gz_path):
             with gzip.open(nodes_gz_path, "rt", encoding="utf-8") as f:
@@ -352,6 +344,7 @@ class CheckpointManager:
                 ))
             selector.load_state_dict(policy_state.get("state", policy_state.get("policy_state", {})))
 
+        selector.extend_budget(self.config.max_generations)
         selector.reconcile_with_db(db)
 
         if invalid_nodes:

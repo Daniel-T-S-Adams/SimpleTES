@@ -157,6 +157,19 @@ Checkpoints land under `--output-path` (default `checkpoints/`) every `--log-int
 uv run python main.py --resume checkpoints/<date>/instance-<id>
 ```
 
+To continue a completed run, increase its total mutation budget:
+
+```bash
+uv run python main.py --resume checkpoints/<date>/instance-<id> --max-generations 120
+```
+
+For a run that used 60 attempts, this schedules 60 additional attempts. Resume
+restores saved settings unless explicitly overridden, and retains candidates,
+scores, chain histories, and completed-attempt counts. Increasing the budget
+adds scheduling capacity across the existing chains, including chains whose
+previous budgets were exhausted. The selector, chain count, and candidate batch
+size must stay the same when extending a run; reducing the saved budget is rejected.
+
 `--save-llm-io` keeps full LLM input/output (large files). `--gzip` compresses checkpoint nodes.
 
 </details>

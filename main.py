@@ -7,7 +7,9 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -52,7 +54,7 @@ def _emergency_save_checkpoint(engine: "SimpleTESEngine") -> None:
 
 def main():
     parser = build_parser(mode="single")
-    args = parser.parse_args()
+    args = parse_run_args(parser)
 
     # Handle --list-policies (early exit, no other args needed)
     _handle_list_policies(args)
@@ -90,6 +92,35 @@ def main():
         # Signal handler should have already triggered graceful shutdown,
         # but if asyncio.run() was interrupted before cleanup, ensure checkpoint is saved
         _emergency_save_checkpoint(engine)
+
+
+def parse_run_args(parser, argv=None):
+    """Restore checkpoint settings, with explicit CLI options taking precedence."""
+    args = parser.parse_args(argv)
+    if args.resume:
+        path = Path(args.resume).expanduser()
+        if not (path / "config.json").is_file():
+            checkpoints = sorted([*path.glob("db_state_*"), *path.glob("ckpt_*")])
+            if not checkpoints:
+                parser.error(f"No checkpoints found in {path}")
+            path = checkpoints[-1]
+        saved = json.loads((path / "config.json").read_text())
+        # Older checkpoints kept chain dimensions only in policy.json.
+        policy_path = path / "policy.json"
+        if policy_path.is_file():
+            policy = json.loads(policy_path.read_text())
+            state = policy.get("state", policy.get("policy_state", {}))
+            for key, state_key in (("num_chains", "num_chains"), ("k_candidates", "k")):
+                if state_key in state:
+                    saved.setdefault(key, state[state_key])
+        rename = {"evaluator_path": "evaluator", "instruction_path": "instruction", "use_gzip": "gzip"}
+        destinations = {action.dest for action in parser._actions}
+        defaults = {rename.get(key, key): value for key, value in saved.items()
+                    if rename.get(key, key) in destinations}
+        defaults["disable_reflection"] = not saved.get("reflection_mode", False)
+        parser.set_defaults(**defaults)
+        args = parser.parse_args(argv)
+    return args
 
 
 def _run_preflight(config) -> None:

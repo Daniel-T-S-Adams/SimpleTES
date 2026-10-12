@@ -35,7 +35,7 @@ def build_parser(*, mode: str = "single") -> argparse.ArgumentParser:
         "--max-generations",
         type=int,
         default=EngineConfig.max_generations,
-        help=f"Number of generation prompts to schedule (default: {EngineConfig.max_generations})",
+        help=f"Total candidate mutation budget, including completed attempts on resume (default: {EngineConfig.max_generations})",
     )
     parser.add_argument(
         "--early-stop-score",

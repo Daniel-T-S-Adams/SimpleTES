@@ -166,6 +166,10 @@ class Selector:
         """Restore state from checkpoint."""
         pass
 
+    def extend_budget(self, max_generations: int) -> None:
+        """Update policy scheduling limits after checkpoint restore, if applicable."""
+        pass
+
     def reconcile_with_db(self, db: NodeDatabase | NodeDatabaseSnapshot) -> None:
         """Optional hook to reconcile internal state after DB load."""
         pass
@@ -669,6 +673,28 @@ class TrajectoryPolicyBase(Selector):
 
     def _load_state_extra(self, state: dict[str, Any]) -> None:
         pass
+
+    def extend_budget(self, max_generations: int) -> None:
+        """Add scheduling capacity without resetting completed or pending batches."""
+        with self._lock:
+            if max_generations < self.max_generations:
+                raise ValueError("Resume cannot decrease max_generations")
+            if max_generations == self.max_generations:
+                return
+
+            old_budgets = compute_chain_budgets(self.max_generations, self.num_chains)
+            new_budgets = compute_chain_budgets(max_generations, self.num_chains)
+            for i in range(self.num_chains):
+                added = new_budgets[i] - old_budgets[i]
+                self.chain_gen_budget[i] += added
+                # A completed partial batch cannot accept more candidates. Extra
+                # attempts therefore need new rounds even when ceil(total / k)
+                # would be unchanged. The scheduler enforces the global limit.
+                self.prompt_budget[i] += (added + self.k - 1) // self.k
+                if (self.chain_prompt_count[i] < self.prompt_budget[i]
+                        and i not in self._ready_chains):
+                    self._ready_chains.append(i)
+            self.max_generations = max_generations
 
     def reconcile_with_db(self, db: NodeDatabase | NodeDatabaseSnapshot) -> None:
         with self._lock:
